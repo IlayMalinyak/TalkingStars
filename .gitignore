@@ -1,0 +1,8 @@
+inr_data/*
+inr_figs/*
+figs/
+*.pth
+*.pt
+*.png
+CSDI/save/*
+PaddleSpatial/

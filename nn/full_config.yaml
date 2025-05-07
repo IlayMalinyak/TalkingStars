@@ -1,0 +1,206 @@
+Data:
+  # Basics
+  log_dir: '/data/TalkingStars/logs'
+  exp_num: autoformer_sandwitch_high_beta_boundary_loss
+  light_model_name: "DoubleInputRegressor"
+  spec_model_name: "MultiTaskRegressor"
+  combined_model_name: "MultiEncoder"
+  # Data
+  dataset: "LightSpecDataset"
+  data_dir: '/data/lightPred/data'
+  spectra_dir: '/data/lamost/data'
+  batch_size: 16
+  num_epochs: 1000
+  max_len_spectra: 4096
+  max_len_lc: 9600
+  max_len_target_lc: 1440
+  max_len_label_lc: 1440
+  lc_freq: 0.0208
+  continuum_norm: True
+  meta_columns_lightspec: ['Teff', 'Mstar', 'RUWE']
+  meta_columns_lc: []
+  meta_columns_spec: []
+  meta_columns_finetune: []
+  meta_columns_simulation: []
+  prediction_labels_lightspec: ['Teff', 'logg', 'FeH', 'Prot']
+  prediction_labels_lc: ['Prot']
+  prediction_labels_spec: ['Teff', 'logg', 'FeH']
+  prediction_labels_finetune: ['Prot']
+  prediction_labels_simulation: ['Period']
+  target_norm: 'minmax'
+  test_run: False
+  create_umap: False
+  load_checkpoint: False
+  masked_transform: False
+  use_acf: True
+  use_fft: False
+  scale_flux: True
+  combined_embed: False
+  dim_lc: 1
+  ssl_weight: 0.5
+  alpha: 0.9
+  beta: 0.9
+  pred_coeff_val: None
+  approach: "multitask"
+  checkpoint_path: '/data/TalkingStars/logs/light_2025-04-11/lc_autoformer_sandwitch.pth'
+
+AutoFormer_lc:
+  seq_len : 19200
+  label_len : 1440
+  pred_len : 1440
+  e_layers : 2
+  d_layers : 2
+  n_heads : 8
+  factor : 1
+  enc_in : 2
+  dec_in: 2
+  c_out: 1
+  d_model: 64
+  des: 'Kepler'
+  itr: 1
+  d_ff: 256
+  moving_avg: 2401
+  embed: 'timeF'
+  freq: 'm'
+  dropout: 0.2
+  activation: 'gelu'
+  multihead: True
+  hidden_size: 16
+  output_dim: 1
+  xavier_gain: 0.01
+  output_attention : False
+  load_checkpoint: True
+  checkpoint_path: '/data/TalkingStars/logs/light_2025-04-09/lc_autoformer_30_test.pth'
+
+DoubleInputRegressor_lc:
+  encoder_only: True
+  stacked_input: True
+  in_channels: 2
+  load_checkpoint: False
+  output_dim: 1
+  num_quantiles: 5
+  dropout_p: 0.3  
+  checkpoint_path: ''
+
+CNNEncoder_lc:
+  # Model
+  in_channels: 2
+  num_layers: 6
+  stride: 1
+  encoder_dims: [32,64,128,256,512]
+  kernel_size: 3
+  dropout_p: 0.3
+  output_dim: 2
+  beta: 1
+  load_checkpoint: False
+  checkpoint_num: 1
+  activation: "sine"
+  sine_w0: 1.0
+  avg_output: True
+  checkpoint_path: '/data/lightSpec/logs/light_2024-11-27/CNNEncoder_lc_1.pth'
+
+
+AstroConformer_lc:
+  # Model
+  in_channels: 2
+  encoder: ["mhsa_pro", "conv"]
+  timeshift: false
+  num_layers: 5
+  num_decoder_layers: 6
+  stride: 20
+  encoder_dim: 512
+  decoder_dim: 128
+  num_heads: 8
+  kernel_size: 3
+  dropout_p: 0.3
+  output_dim: 3
+  encoder_only: True
+  norm: "postnorm"
+  deepnorm: True
+  beta: 0.913    # Calculated as (num_layers/6)^(-0.5) for 5 layers
+  load_checkpoint: False
+  spec_checkpoint_path: ''
+
+MultiTaskRegressor_spec:
+  backbone: 'cnn'
+  in_channels: 1
+  num_layers: 5
+  stride: 1
+  encoder_dims: [64,128,256,1024,2048]
+  transformer_layers: 4
+  kernel_size: 3
+  dropout_p: 0.2
+  avg_output: False
+  output_dim: 3
+  num_quantiles: 5
+  beta: 1
+  load_checkpoint: False
+  checkpoint_num: 1
+  activation: "silu"
+  checkpoint_path: "/data/lightSpec/logs/spec_decode2_2025-02-16/MultiTaskRegressor_spectra_decode_4.pth"
+
+
+Conformer_spec:
+  encoder: ["mhsa_pro", "conv", "ffn"]
+  timeshift: false
+  num_layers: 8
+  encoder_dim: 2048
+  num_heads: 8
+  kernel_size: 3
+  dropout_p: 0.2
+  norm: "postnorm"
+  deepnorm: True
+  beta: 0.866    # Calculated as (num_layers/6)^(-0.5) for 8 layers
+
+
+rl_transformer:
+  d_node: 32
+  d_edge: 32
+  d_attn_hid: 32
+  d_node_hid: 32
+  d_edge_hid: 32
+  d_out_hid: 32
+  d_out: 32
+  n_layers: 4
+  n_heads: 8
+  layer_layout: [1,2048,2048, 1]
+  dropout: 0.1
+  node_update_type: "rt"
+  disable_edge_updates: False
+  use_cls_token: False
+  pooling_method: "graph_multiset_transformer"
+  pooling_layer_idx: "all"
+  rev_edge_features: False
+  modulate_v: True
+  use_ln: True
+  tfixit_init: False
+
+GraphConstructor:
+  # _target_: "/data/TalkingStars/nn/graph_constructor.GraphConstructor"
+  # _recursive_: False
+  # _convert_: "all"
+  d_in: 1
+  d_edge_in: 1
+  zero_out_bias: False
+  zero_out_weights: False
+  sin_emb: False
+  sin_emb_dim: 128
+  use_pos_embed: False
+  input_layers: 1
+  inp_factor: 1
+  num_probe_features: 0
+  inr_model: None
+  stats: None
+
+  
+Optimization:
+  # Optimization
+  max_lr:  1e-4
+  weight_decay: 1e-6
+  warmup_pct: 0.15
+  steps_per_epoch: 3500
+  momentum: 0.95
+  nesterov: true
+  optimizer: "adamw"
+  quantiles: [0.5]
+
