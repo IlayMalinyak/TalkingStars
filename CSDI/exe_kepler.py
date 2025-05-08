@@ -4,11 +4,14 @@ import datetime
 import json
 import yaml
 import os
-os.system('pip install -r requirements.txt')
+import numpy as np
+
+# os.system('pip install -r requirements.txt')
 from torch.nn.parallel import DistributedDataParallel as DDP
+from collections import OrderedDict
 
 
-from main_model import CSDI_Forecasting
+from main_model import CSDI_Forecasting, CSDI_Kepler
 from dataset_kepler import get_dataloader
 from utils import train, evaluate, setup_ddp
 
@@ -57,7 +60,7 @@ train_loader, valid_loader, test_loader, scaler, mean_scaler = get_dataloader(
     batch_size=config["train"]["batch_size"],
 )
 
-model = CSDI_Forecasting(config, device, target_dim).to(device)
+model = CSDI_Kepler(config, device, target_dim).to(device)
 if config['train']['ddp']:
     model = DDP(
         model, device_ids=[device], output_device=device, find_unused_parameters=True
@@ -72,7 +75,16 @@ if args.modelfolder == "":
         foldername=foldername,
     )
 else:
-    model.load_state_dict(torch.load("./save/" + args.modelfolder + "/model.pth"))
+    state_dict = torch.load("./save/" + args.modelfolder + "/model.pth")
+    if not config['train']['ddp']:
+        new_state_dict = OrderedDict()
+        for key, val in state_dict.items():
+            if key.startswith("module."):
+                new_key = key.replace("module.", "")
+                new_state_dict[new_key] = val
+    else:
+        new_state_dict = state_dict
+    model.load_state_dict(new_state_dict)
 model.target_dim = target_dim
 evaluate(
     model,
@@ -80,7 +92,7 @@ evaluate(
     nsample=args.nsample,
     scaler=scaler,
     mean_scaler=mean_scaler,
-    max_iter=2,
+    max_iter=np.inf,
     foldername=foldername,
     config=config['train'],
 )

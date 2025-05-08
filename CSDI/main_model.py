@@ -3,7 +3,8 @@ import torch
 import torch.nn as nn
 from diff_models import diff_CSDI
 from tqdm import tqdm
-
+from visualization import create_diffusion_animation
+import matplotlib.pyplot as plt
 
 class CSDI_base(nn.Module):
     def __init__(self, target_dim, config, device):
@@ -378,10 +379,10 @@ class CSDI_Forecasting(CSDI_base):
         ) = self.process_data(batch)
 
         if is_train == 1 and (self.target_dim_base > self.num_sample_features):
-            # observed_data, observed_mask,feature_id,gt_mask = \
-            #         self.sample_features(observed_data, observed_mask,feature_id,gt_mask)
-            self.target_dim = self.target_dim_base
-            feature_id = None
+            observed_data, observed_mask,feature_id,gt_mask = \
+                    self.sample_features(observed_data, observed_mask,feature_id,gt_mask)
+            # self.target_dim = self.target_dim_base
+            # feature_id = None
         else:
             self.target_dim = self.target_dim_base
             feature_id = None
@@ -398,8 +399,6 @@ class CSDI_Forecasting(CSDI_base):
         loss_func = self.calc_loss if is_train == 1 else self.calc_loss_valid
 
         return loss_func(observed_data, cond_mask, observed_mask, side_info, is_train)
-
-
 
     def evaluate(self, batch, n_samples):
         (
@@ -418,7 +417,150 @@ class CSDI_Forecasting(CSDI_base):
 
             side_info = self.get_side_info(observed_tp, cond_mask)
 
-            samples = self.impute(observed_data, cond_mask, side_info, n_samples)
+            samples = self.impute(observed_data, target_mask, side_info, n_samples)
 
 
         return samples, observed_data, target_mask, observed_mask, observed_tp
+
+
+class CSDI_Kepler(CSDI_Forecasting):
+    def __init__(self, config, device, target_dim):
+        super(CSDI_Kepler, self).__init__(config, device, target_dim)
+
+
+    def filter_non_zeros(self, x, mask):
+        first_mask = mask[0, 0]
+        if torch.all(mask == first_mask.view(1, 1, -1)):
+            mask = first_mask
+        else:
+            raise ValueError("Mask is not the same across batch and sequence dimensions")
+        non_zero_indices = torch.nonzero(mask.view(-1), as_tuple=True)[0]
+
+        # Extract the same indices from every (b,k) pair in the tensor
+        b, k, _ = x.shape
+
+        # Reshape tensor to (b*k, l)
+        tensor_flat = x.view(b * k, -1)
+
+        # Index the flattened tensor using the non-zero indices
+        filtered_flat = tensor_flat[:, non_zero_indices]
+
+        # Reshape back to (b, k, num_nonzeros)
+        filtered_tensor = filtered_flat.view(b, k, -1)
+
+        return filtered_tensor
+
+    def _collect_diffusion_frames(self, observed_data, cond_mask, side_info, n_samples):
+        """
+        Collect frames for visualization during the diffusion process.
+        Returns the imputed samples along with visualization data.
+        """
+        B, K, L = observed_data.shape
+        imputed_samples = torch.zeros(B, n_samples, K, L).to(self.device)
+
+        # Get the true observed values (will be constant across all frames)
+        true_values = self.filter_non_zeros(observed_data, (1 - cond_mask))
+        true_values = true_values[0].squeeze().cpu().numpy()
+
+        # For storing the frames for the GIF
+        frames_data = []
+        time_steps = []
+
+        for i in tqdm(range(n_samples)):
+            # generate noisy observation for unconditional model
+            if self.is_unconditional == True:
+                noisy_obs = observed_data
+                noisy_cond_history = []
+                for t in range(self.num_steps):
+                    noise = torch.randn_like(noisy_obs)
+                    noisy_obs = (self.alpha_hat[t] ** 0.5) * noisy_obs + self.beta[t] ** 0.5 * noise
+                    noisy_cond_history.append(noisy_obs * cond_mask)
+
+            current_sample = torch.randn_like(observed_data)
+
+            for t in range(self.num_steps - 1, -1, -1):
+                if self.is_unconditional == True:
+                    diff_input = cond_mask * noisy_cond_history[t] + (1.0 - cond_mask) * current_sample
+                    diff_input = diff_input.unsqueeze(1)  # (B,1,K,L)
+                else:
+                    cond_obs = (cond_mask * observed_data).unsqueeze(1)
+                    noisy_target = ((1 - cond_mask) * current_sample).unsqueeze(1)
+                    diff_input = torch.cat([cond_obs, noisy_target], dim=1)  # (B,2,K,L)
+
+                predicted = self.diffmodel(diff_input, side_info, torch.tensor([t]).to(self.device))
+
+                coeff1 = 1 / self.alpha_hat[t] ** 0.5
+                coeff2 = (1 - self.alpha_hat[t]) / (1 - self.alpha[t]) ** 0.5
+                current_sample = coeff1 * (current_sample - coeff2 * predicted)
+
+                filtered_sample = self.filter_non_zeros(current_sample, (1 - cond_mask))
+
+                # Store frames for GIF instead of plotting directly
+                if t % 10 == 0:
+                    # Store the sample and time step
+                    frames_data.append(filtered_sample[0].squeeze().cpu().numpy())
+                    time_steps.append(t)
+
+                if t > 0:
+                    noise = torch.randn_like(current_sample)
+                    sigma = (
+                                    (1.0 - self.alpha[t - 1]) / (1.0 - self.alpha[t]) * self.beta[t]
+                            ) ** 0.5
+                    current_sample += sigma * noise
+
+            imputed_samples[:, i] = current_sample.detach()
+
+        return imputed_samples, frames_data, time_steps, true_values
+
+    def impute(self, observed_data, cond_mask, side_info, n_samples, save_animation=True,
+               save_path="diffusion_steps", fps=2):
+        """
+        Impute missing values and optionally create an animation of the diffusion process.
+
+        Parameters:
+        - observed_data: The observed data tensor
+        - cond_mask: Mask indicating which values are observed
+        - side_info: Additional information for the diffusion model
+        - n_samples: Number of samples to generate
+        - save_animation: Whether to save the animation (default: True)
+        - save_path: Path to save the animation (default: "diffusion_steps.gif")
+        - fps: Frames per second for the animation (default: 2)
+
+        Returns:
+        - imputed_samples: The imputed samples
+        """
+        # Collect frames during diffusion process
+        imputed_samples, frames_data, time_steps, true_values = self._collect_diffusion_frames(
+            observed_data, cond_mask, side_info, n_samples
+        )
+
+        # Create and save animation if requested
+        if save_animation and frames_data:
+            create_diffusion_animation(frames_data, time_steps, true_values, save_path=save_path, fps=fps)
+
+        return imputed_samples
+
+    def evaluate(self, batch, n_samples):
+        (
+            observed_data,
+            observed_mask,
+            observed_tp,
+            gt_mask,
+            _,
+            _,
+            feature_id,
+        ) = self.process_data(batch)
+
+        with torch.no_grad():
+            cond_mask = gt_mask
+            target_mask = observed_mask * (gt_mask)
+
+            side_info = self.get_side_info(observed_tp, cond_mask)
+
+            samples = self.impute(observed_data, target_mask, side_info, n_samples, save_animation=False)
+
+
+        return samples, observed_data, 1 - target_mask, observed_mask, observed_tp
+
+
+

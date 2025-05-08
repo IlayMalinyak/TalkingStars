@@ -3,10 +3,10 @@
 
 train:
   epochs: 100
-  batch_size: 64 
+  batch_size: 8
   lr: 1.0e-3
   itr_per_epoch: 1.0e+8
-  ddp: True
+  ddp: False
 
 diffusion:
   layers: 4 

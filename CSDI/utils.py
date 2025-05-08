@@ -8,6 +8,29 @@ import torch.distributed as dist
 import os
 import matplotlib.pyplot as plt
 
+
+def filter_non_zeros(x, mask):
+    first_mask = mask[0, 0]
+    if torch.all(mask == first_mask.view(1, 1, -1)):
+        mask = first_mask
+    else:
+        raise ValueError("Mask is not the same across batch and sequence dimensions")
+    non_zero_indices = torch.nonzero(mask.view(-1), as_tuple=True)[0]
+
+    # Extract the same indices from every (b,k) pair in the tensor
+    b, k, _ = x.shape
+
+    # Reshape tensor to (b*k, l)
+    tensor_flat = x.view(b * k, -1)
+
+    # Index the flattened tensor using the non-zero indices
+    filtered_flat = tensor_flat[:, non_zero_indices]
+
+    # Reshape back to (b, k, num_nonzeros)
+    filtered_tensor = filtered_flat.view(b, k, -1)
+
+    return filtered_tensor
+
 def setup_ddp():
     """
     Setup the distributed training environment.
@@ -221,13 +244,13 @@ def evaluate(model, test_loader, nsample=100, scaler=1, mean_scaler=0, max_iter=
 
             for batch_no, test_batch in enumerate(it, start=1):
 
-                fig, axes = plt.subplots(1, 2, figsize=(26, 16))
-                axes[0].plot(test_batch['timepoints'][0].squeeze().cpu(), test_batch['observed_data'][0],label="observed")
-                axes[1].plot(test_batch['timepoints'][0].squeeze().cpu(), test_batch['gt_mask'][0], label="target")
-                axes[0].legend()
-                axes[1].legend()
-                plt.savefig(f'/data/TalkingStars/figs/CSDI_input_{batch_no}.png')
-                plt.close()
+                # fig, axes = plt.subplots(1, 2, figsize=(26, 16))
+                # axes[0].plot(test_batch['timepoints'][0].squeeze().cpu(), test_batch['observed_data'][0],label="observed")
+                # axes[1].plot(test_batch['timepoints'][0].squeeze().cpu(), test_batch['gt_mask'][0], label="target")
+                # axes[0].legend()
+                # axes[1].legend()
+                # plt.savefig(f'/data/TalkingStars/figs/CSDI_input_{batch_no}.png')
+                # plt.close()
 
                 if is_ddp:
                     output = model.module.evaluate(test_batch, nsample)
@@ -235,35 +258,57 @@ def evaluate(model, test_loader, nsample=100, scaler=1, mean_scaler=0, max_iter=
                     output = model.evaluate(test_batch, nsample)
 
                 samples, c_target, eval_points, observed_points, observed_time = output
+                filtered_time = filter_non_zeros(observed_time.unsqueeze(1), eval_points)
                 samples = samples.permute(0, 1, 3, 2)  # (B,nsample,L,K)
                 c_target = c_target.permute(0, 2, 1)  # (B,L,K)
                 eval_points = eval_points.permute(0, 2, 1)
                 observed_points = observed_points.permute(0, 2, 1)
 
                 samples_median = samples.median(dim=1)
+                samples_std = samples.std(dim=1)
                 all_target.append(c_target)
                 all_evalpoint.append(eval_points)
                 all_observed_point.append(observed_points)
                 all_observed_time.append(observed_time)
                 all_generated_samples.append(samples)
-                
-                fig, axes = plt.subplots(1, 3, figsize=(26, 16))
-                print(samples_median.values.shape, c_target.shape, eval_points.shape, observed_points.shape)
-                axes[0].plot(observed_time[0].squeeze().cpu(), observed_points[0].squeeze().cpu(), label="observed")
-                axes[1].plot(observed_time[0].squeeze().cpu(), c_target[0].squeeze().cpu(), label="target")
-                axes[2].plot(observed_time[0].squeeze().cpu(), samples_median.values[0].squeeze().cpu(), label="median prediction")
-                axes[0].legend()
-                axes[1].legend()
-                axes[2].legend()
-                plt.savefig(f'/data/TalkingStars/figs/CSDI_eval_{batch_no}.png')
+
+                filtered_samples_median = filter_non_zeros(samples_median.values.permute(0, 2, 1),
+                                                           eval_points.permute(0, 2, 1))
+                filtered_samples_std = filter_non_zeros(samples_std.permute(0, 2, 1),
+                                                        eval_points.permute(0, 2, 1))
+
+                plt.plot(observed_time[0].squeeze().cpu(), c_target[0].squeeze().cpu(), label='True')
+                plt.plot(filtered_time[0].squeeze().cpu(), filtered_samples_median[0].squeeze().cpu(), label='Median')
+                min_std = filtered_samples_median[0] - filtered_samples_std[0]
+                max_std = filtered_samples_median[0] + filtered_samples_std[0]
+                plt.fill_between(filtered_time[0].squeeze().cpu(),
+                                 min_std.squeeze().cpu(),
+                                 max_std.squeeze().cpu(),
+                                 alpha=0.5,
+                                 color='salmon',
+                                 label='±1 std')
+                plt.legend()
+                plt.savefig(os.path.join(foldername, f"sample_prediction_{batch_no}.png"))
                 plt.close()
+
+                
+                # fig, axes = plt.subplots(1, 3, figsize=(26, 16))
+                # print(samples_median.values.shape, c_target.shape, eval_points.shape, observed_points.shape)
+                # axes[0].plot(observed_time[0].squeeze().cpu(), observed_points[0].squeeze().cpu(), label="observed")
+                # axes[1].plot(observed_time[0].squeeze().cpu(), c_target[0].squeeze().cpu(), label="target")
+                # axes[2].plot(observed_time[0].squeeze().cpu(), samples_median.values[0].squeeze().cpu(), label="median prediction")
+                # axes[0].legend()
+                # axes[1].legend()
+                # axes[2].legend()
+                # plt.savefig(f'/data/TalkingStars/figs/CSDI_eval_{batch_no}.png')
+                # plt.close()
                 # Calculate the mean squared error and mean absolute error
 
                 mse_current = (
-                    ((samples_median.values - c_target) * eval_points) ** 2
+                    ((samples_median.values - c_target) * (eval_points)) ** 2
                 ) * (scaler ** 2)
                 mae_current = (
-                    torch.abs((samples_median.values - c_target) * eval_points) 
+                    torch.abs((samples_median.values - c_target) * (eval_points))
                 ) * scaler
 
                 mse_total += mse_current.sum().item()
