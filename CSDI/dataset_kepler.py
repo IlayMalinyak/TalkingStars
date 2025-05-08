@@ -222,16 +222,6 @@ class KeplerDataset():
         x = self.fill_nan_np(x, interpolate=True)
         info['idx'] = idx
         
-        if self.scale_flux:
-            min_val = np.nanmin(x)
-            max_val = np.nanmax(x)
-            range_val = max_val - min_val
-            
-            if range_val > 1e-10:  # Using a small epsilon value
-                x = (x - min_val) / range_val
-                x = x * 2 - 1
-            else:
-                x = np.zeros_like(x)
 
         
         # Apply transformations if any
@@ -247,6 +237,18 @@ class KeplerDataset():
             x_enc, x_mark_enc = torch.zeros(self.seq_len, self.dims), torch.zeros((self.seq_len))
             mask_enc = torch.ones((self.seq_len,1))
         
+        if self.scale_flux:
+            min_val = np.nanmin(x_enc)
+            max_val = np.nanmax(x_enc)
+            range_val = max_val - min_val
+            
+            if range_val > 1e-10:  # Using a small epsilon value
+                x_enc = (x_enc - min_val) / range_val
+                x_enc = x_enc * 2 - 1
+            # else:
+            #     x_enc = np.zeros_like(x_)
+
+
         target_mask = mask_enc.clone()
         target_mask[-self.target_len:] = 0.
         info['chop_start'] = start
@@ -281,16 +283,6 @@ def get_dataloader(datatype,device, ddp=False, world_size=1, batch_size=64):
     train_df, test_df = train_test_split(kepler_df, test_size=0.2, random_state=1234)
     val_df, test_df = train_test_split(test_df, test_size=0.5, random_state=1234)
 
-    if ddp:
-        train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=device)
-        valid_sampler = DistributedSampler(valid_dataset, num_replicas=world_size, rank=device)
-        test_sampler = DistributedSampler(test_dataset, num_replicas=world_size, rank=device)
-        shuffle = 0
-    else:
-        train_sampler = None
-        valid_sampler = None
-        test_sampler = None
-        shuffle = 1
     dataset = KeplerDataset(df=train_df,
                         transforms=transforms,
                         npy_path = '/data/lightPred/data/raw_npy',
@@ -299,12 +291,10 @@ def get_dataloader(datatype,device, ddp=False, world_size=1, batch_size=64):
                         masked_transforms = False,
                         use_acf=False,
                         use_fft=False,
-                        scale_flux=False,
+                        scale_flux=True,
                         labels=[],
                         dims=1,
                                 )
-    train_loader = DataLoader(
-        dataset, batch_size=batch_size, sampler=train_sampler, shuffle=shuffle)
     valid_dataset = KeplerDataset(df=val_df,
                         transforms=transforms,
                         npy_path = '/data/lightPred/data/raw_npy',
@@ -317,8 +307,6 @@ def get_dataloader(datatype,device, ddp=False, world_size=1, batch_size=64):
                         labels=[],
                         dims=1,
                                 )
-    valid_loader = DataLoader(
-        valid_dataset, batch_size=batch_size, sampler=valid_sampler, shuffle=0)
     test_dataset = KeplerDataset(df=test_df,
                         transforms=transforms,
                         npy_path = '/data/lightPred/data/raw_npy',
@@ -331,11 +319,27 @@ def get_dataloader(datatype,device, ddp=False, world_size=1, batch_size=64):
                         labels=[],
                         dims=1,
                                 )
+
+    if ddp:
+        train_sampler = DistributedSampler(dataset, num_replicas=world_size, rank=device)
+        valid_sampler = DistributedSampler(valid_dataset, num_replicas=world_size, rank=device)
+        test_sampler = DistributedSampler(test_dataset, num_replicas=world_size, rank=device)
+        shuffle = 0
+    else:
+        train_sampler = None
+        valid_sampler = None
+        test_sampler = None
+        shuffle = 1
+
+    valid_loader = DataLoader(
+        valid_dataset, batch_size=batch_size, sampler=valid_sampler, shuffle=0)
+    train_loader = DataLoader(
+        dataset, batch_size=batch_size, sampler=train_sampler, shuffle=shuffle)
     test_loader = DataLoader(
         test_dataset, batch_size=batch_size, sampler=test_sampler, shuffle=0)
 
-    scaler = 0
-    mean_scaler = 1
+    scaler = 1
+    mean_scaler = 0
 
 
     

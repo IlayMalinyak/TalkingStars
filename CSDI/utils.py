@@ -93,58 +93,54 @@ def train(
             model.eval()
             avg_loss_valid = 0
             with torch.no_grad():
-                # Set valid sampler's epoch for proper shuffling in distributed training
-                if config.get('ddp', False) and hasattr(valid_loader.sampler, 'set_epoch'):
-                    valid_loader.sampler.set_epoch(epoch_no)
-                    
-                with tqdm(valid_loader, mininterval=5.0, maxinterval=50.0,
-                          disable=config.get('ddp', False) and dist.get_rank() != 0) as it:
-                    for batch_no, valid_batch in enumerate(it, start=1):
-                        loss = model(valid_batch, is_train=0)
-                        
-                        # Aggregate validation loss from all processes if using DDP
-                        if config.get('ddp', False):
-                            loss_tensor = torch.tensor([loss.item()], device=torch.device('cuda'))
-                            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
-                            avg_loss_valid_item = loss_tensor.item() / dist.get_world_size()
-                        else:
-                            avg_loss_valid_item = loss.item()
-                            
-                        avg_loss_valid += avg_loss_valid_item
-                        
-                        if not config.get('ddp', False) or dist.get_rank() == 0:
-                            it.set_postfix(
-                                ordered_dict={
-                                    "valid_avg_epoch_loss": avg_loss_valid / batch_no,
-                                    "epoch": epoch_no,
-                                },
-                                refresh=False,
-                            )
+        if config.get('ddp', False) and hasattr(valid_loader.sampler, 'set_epoch'):
+            valid_loader.sampler.set_epoch(epoch_no)
             
-            # Ensure all processes have the same validation loss for comparison
-            if config.get('ddp', False):
-                avg_loss_valid_tensor = torch.tensor([avg_loss_valid], device=torch.device('cuda'))
-                dist.all_reduce(avg_loss_valid_tensor, op=dist.ReduceOp.SUM)
-                avg_loss_valid = avg_loss_valid_tensor.item() / dist.get_world_size()
+        with tqdm(valid_loader, mininterval=5.0, maxinterval=50.0,
+                  disable=config.get('ddp', False) and dist.get_rank() != 0) as it:
+            for batch_no, valid_batch in enumerate(it, start=1):
+                loss = model(valid_batch, is_train=0)
+                total_loss += loss.item()
+                total_batches += 1
                 
-                # Also sync batch_no across processes
-                batch_no_tensor = torch.tensor([batch_no], device=torch.device('cuda'))
-                dist.all_reduce(batch_no_tensor, op=dist.ReduceOp.MAX)
-                batch_no = batch_no_tensor.item()
-                
-            # Only rank 0 saves the model and prints updates
-            if (not config.get('ddp', False) or dist.get_rank() == 0) and best_valid_loss > avg_loss_valid:
-                best_valid_loss = avg_loss_valid
-                print(
-                    "\n best loss is updated to ",
-                    avg_loss_valid / batch_no,
-                    "at",
-                    epoch_no,
-                )
-                # Save the best model if foldername is provided
-                if foldername != "":
-                    torch.save(model.state_dict(), output_path)
-                    print("model saved at ", output_path)
+                if not config.get('ddp', False) or dist.get_rank() == 0:
+                    it.set_postfix(
+                        ordered_dict={
+                            "valid_avg_epoch_loss": total_loss / total_batches,
+                            "epoch": epoch_no,
+                        },
+                        refresh=False,
+                    )
+    
+        # Synchronize across all processes
+        if config.get('ddp', False):
+            total_loss_tensor = torch.tensor([total_loss], device=loss.device)
+            total_batches_tensor = torch.tensor([total_batches], device=loss.device)
+            dist.all_reduce(total_loss_tensor, op=dist.ReduceOp.SUM)
+            dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
+            avg_loss_valid = total_loss_tensor.item() / total_batches_tensor.item()
+        else:
+            avg_loss_valid = total_loss / total_batches
+                    
+                    
+            # Also sync batch_no across processes
+            batch_no_tensor = torch.tensor([batch_no], device=torch.device('cuda'))
+            dist.all_reduce(batch_no_tensor, op=dist.ReduceOp.MAX)
+            batch_no = batch_no_tensor.item()
+            
+        # Only rank 0 saves the model and prints updates
+        if (not config.get('ddp', False) or dist.get_rank() == 0) and best_valid_loss > avg_loss_valid:
+            best_valid_loss = avg_loss_valid
+            print(
+                "\n best loss is updated to ",
+                avg_loss_valid / batch_no,
+                "at",
+                epoch_no,
+            )
+            # Save the best model if foldername is provided
+            if foldername != "":
+                torch.save(model.state_dict(), output_path)
+                print("model saved at ", output_path)
 
     # Save final model (only rank 0 if using DDP)
     if foldername != "" and (not config.get('ddp', False) or dist.get_rank() == 0):

@@ -55,6 +55,8 @@ train_loader, valid_loader, test_loader, scaler, mean_scaler = get_dataloader(
     datatype=args.datatype,
     device= device,
     batch_size=config["train"]["batch_size"],
+    ddp=config['train']['ddp'],
+    world_size=world_size,
 )
 
 model = CSDI_Forecasting(config, device, target_dim).to(device)
